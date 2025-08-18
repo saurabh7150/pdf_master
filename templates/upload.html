@@ -1,18 +1,143 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Upload Bank Statement</title>
+  <meta charset="utf-8">
+  <title>Upload Bank Statement</title>
+  <style>
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; padding: 24px; }
+    label { display:block; margin: 10px 0 6px; font-weight: 600; }
+    select, input[type="file"], input[type="number"], button { padding: 8px; font-size: 14px; }
+    .hint { color:#666; font-size: 13px; margin-top: 4px; }
+    .preview { margin-top: 8px; font-size: 13px; color:#444; }
+    .card { border:1px solid #ddd; border-radius:8px; padding:16px; max-width: 640px; }
+    .row { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+    .muted { color:#666; font-size:12px; }
+    .collapse { display:none; margin-top:12px; border-top:1px dashed #ddd; padding-top:12px; }
+  </style>
 </head>
 <body>
-    <h2>Upload Your Bank Statement (PDF)</h2>
-    <form method="POST" enctype="multipart/form-data">
-        <label>Select one or more PDF files:</label><br>
-        <input type="file" name="pdf_file" multiple><br><br>
+  <h2>Upload Your Bank Statement (PDF)</h2>
 
-        <label for="target_day">Enter the target day of the month (default is 5):</label><br>
-        <input type="number" name="target_day" min="1" max="31" value="5"><br><br>
+  <form method="POST" enctype="multipart/form-data" class="card">
+    <label for="pdf_file">Select one or more PDF files</label>
+    <input type="file" id="pdf_file" name="pdf_file" multiple accept="application/pdf" required>
+    <div class="hint">Only PDF files are supported.</div>
 
-        <input type="submit" value="Upload">
-    </form>
+    <label for="bank_name">Bank</label>
+    <select id="bank_name" name="bank_name" required>
+      <option value="">-- Select Bank --</option>
+      <option value="TATA">TATA</option>
+      <option value="IDFC">IDFC</option>
+      <option value="BAJAJ">BAJAJ</option>
+      <option value="YES BANK">YES BANK</option>
+      <option value="PIRAMAL">PIRAMAL</option>
+      <option value="AXIS BANK">AXIS BANK</option>
+      <option value="HDFC">HDFC</option>
+      <option value="HERO">HERO</option>
+      <option value="POONAWALA">POONAWALA</option>
+      <option value="ICICI">ICICI</option>
+      <option value="AU">AU</option>
+      <option value="CHOLA">CHOLA</option>
+    </select>
+
+    <!-- (Optional) live preview of which days will be used -->
+    <div id="days_preview" class="preview"></div>
+
+    <!-- Optional Custom Days toggle -->
+    <div class="row" style="margin-top:12px;">
+      <input type="checkbox" id="use_custom_days">
+      <label for="use_custom_days" style="margin:0;">Add custom target days (optional)</label>
+      <span class="muted">Leave unchecked to use bank defaults only.</span>
+    </div>
+
+    <!-- Collapsible custom days section -->
+    <div id="custom_days_section" class="collapse">
+      <div class="row">
+        <label for="custom_count" style="margin:0;">How many custom days?</label>
+        <input type="number" id="custom_count" min="0" max="31" value="0" style="width:100px;">
+        <span class="muted">Enter count, then fill the day boxes (1–31). Empty boxes are ignored.</span>
+      </div>
+
+      <!-- Hidden field your backend reads -->
+      <input type="hidden" id="date_count" name="date_count" value="0">
+
+      <div id="dates_container" style="margin-top:10px;"></div>
+    </div>
+
+    <button type="submit" style="margin-top: 12px;">Process</button>
+  </form>
+
+  <script>
+    // Preview of default target days per bank (UI-only)
+    const BANK_TO_DAYS = {
+      "TATA": [1,5,15,25],
+      "IDFC": [1,10,20],
+      "BAJAJ": [2,10,20,30],
+      "YES BANK": [5,15,25],
+      "PIRAMAL": [5,15,25,30],
+      "AXIS BANK": [5,15,25],
+      "HDFC": [2,5,7,15,20],
+      "HERO": [],
+      "POONAWALA": [5,10,15,20,25,30],
+      "ICICI": [5,12,15],
+      "AU": "DAILY",
+      "CHOLA": [5,10,15,20,25],
+    };
+
+    const bankSelect = document.getElementById('bank_name');
+    const preview = document.getElementById('days_preview');
+    function updatePreview() {
+      const bank = bankSelect.value;
+      if (!bank) { preview.textContent = ""; return; }
+      const spec = BANK_TO_DAYS[bank];
+      let msg = "";
+      if (spec === "DAILY") msg = "Target days: Daily (1–31)";
+      else if (Array.isArray(spec) && spec.length === 0) msg = "Target days: N/A (backend may use default)";
+      else if (Array.isArray(spec)) msg = "Target days: " + spec.join(", ");
+      else msg = "Target days: default (backend)";
+      preview.textContent = msg;
+    }
+    bankSelect.addEventListener('change', updatePreview);
+
+    // Optional custom days UI (no phantom defaults)
+    const toggle = document.getElementById('use_custom_days');
+    const section = document.getElementById('custom_days_section');
+    const customCount = document.getElementById('custom_count');
+    const dateCount = document.getElementById('date_count');
+    const container = document.getElementById('dates_container');
+
+    function renderCustomInputs(n) {
+      // clamp between 0..31
+      n = Math.max(0, Math.min(31, parseInt(n || 0, 10)));
+      dateCount.value = String(n); // backend reads this
+      container.innerHTML = "";
+      for (let i = 1; i <= n; i++) {
+        const div = document.createElement('div');
+        div.className = 'row';
+        div.innerHTML = `
+          <label style="margin:0; width:160px;">Target day ${i}</label>
+          <input type="number" name="target_day_${i}" min="1" max="31" placeholder="1–31" style="width:120px;">
+        `;
+        container.appendChild(div);
+      }
+    }
+
+    toggle.addEventListener('change', () => {
+      section.style.display = toggle.checked ? 'block' : 'none';
+      if (!toggle.checked) {
+        // hide & reset
+        customCount.value = 0;
+        renderCustomInputs(0);
+      }
+    });
+
+    customCount.addEventListener('input', (e) => {
+      renderCustomInputs(e.target.value);
+    });
+
+    // initial state
+    updatePreview();
+    renderCustomInputs(0);
+  </script>
 </body>
 </html>
