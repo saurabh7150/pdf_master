@@ -17,6 +17,119 @@ client = OpenAI(
 )
 
 import re
+# ===== Target-day mapping by bank =====
+BANK_TO_DAYS = {
+    "TATA":       [1, 5, 15, 25],
+    "IDFC":       [1, 10, 20],
+    "BAJAJ":      [2, 10, 20, 30],
+    "YES BANK":   [5, 15, 25],
+    "PIRAMAL":    [5, 15, 25, 30],
+    "AXIS BANK":  [5, 15, 25],
+    "HDFC":       [2, 5, 7, 15, 20],
+    "HERO":       [],  # N/A
+    "POONAWALA":  [5, 10, 15, 20, 25, 30],
+    "ICICI":      [5, 12, 15],
+    "AU":         "DAILY",
+    "CHOLA":      [5, 10, 15, 20, 25],
+}
+DEFAULT_DAYS = [5]  # fallback if bank not in map
+BANK_MONTH_POLICY = {
+    "TATA":      {"months": 3,  "include_current": False},  # LATEST 3 MONTH + CURRENT MONTH IS NOT COUNTED AS MONTH
+    "IDFC":      {"months": 6,  "include_current": True},   # LATEST 6 MONTH + CURRENT MONTH
+    "BAJAJ":     {"months": 3,  "include_current": True},   # LATEST 3 MONTH + CURRENT MONTH
+    "YES BANK":  {"months": 6,  "include_current": True},   # LATEST 6 MONTH + CURRENT MONTH
+    "PIRAMAL":   {"months": 6,  "include_current": False},  # LATEST 6 MONTH - CURRENT MONTH IS NOT COUNTED AS MONTH
+    "AXIS BANK": {"months": 3,  "include_current": True},   # LATEST 3 MONTH + CURRENT MONTH
+    "HDFC":      {"months": 6,  "include_current": True},   # LATEST 6 MONTH + CURRENT MONTH
+    "HERO":      {"months": 0,  "include_current": False},  # N/A
+    "POONAWALA": {"months": 6,  "include_current": True},   # LATEST 6 MONTH + CURRENT MONTH
+    "ICICI":     {"months": 12, "include_current": True},   # LATEST 12 MONTH + CURRENT MONTH
+    "AU":        {"months": 6,  "include_current": True},   # LATEST 6 MONTH + CURRENT MONTH
+    "CHOLA":     {"months": 6,  "include_current": True},   # LATEST 6 MONTH + CURRENT MONTH
+}
+def ym(dt: datetime) -> tuple[int, int]:
+    return (dt.year, dt.month)
+def months_back_list(today: datetime, n: int, include_current: bool) -> list[tuple[int, int]]:
+    """
+    Return list of (year, month) tuples.
+      - If include_current = True and n=6 on Aug 2025 => [Aug25, Jul25, Jun25, May25, Apr25, Mar25]
+      - If include_current = False and n=3 on Aug 2025 => [Jul25, Jun25, May25]
+    """
+    out = []
+    year, month = today.year, today.month
+    offset = 0 if include_current else 1
+    for i in range(offset, offset + n):
+        m = month - i
+        y = year
+        while m <= 0:
+            m += 12
+            y -= 1
+        out.append((y, m))
+    return out
+
+DATE_RE = re.compile(r"(^|\n)\s*(\d{2})-(\d{2})-(\d{4})")
+def extract_available_yearmonths(text: str) -> list[tuple[int, int]]:
+    """Find unique (year, month) pairs present in the statement text."""
+    seen = set()
+    for m in DATE_RE.finditer(text or ""):
+        d = int(m.group(2)); mo = int(m.group(3)); y = int(m.group(4))
+        try:
+            datetime(y, mo, d)
+            seen.add((y, mo))
+        except ValueError:
+            pass
+    # sort descending by date (latest first)
+    return sorted(seen, key=lambda t: (t[0], t[1]), reverse=True)
+
+def allowed_months_for_bank(bank_name: str, today: datetime, available_yms: list[tuple[int,int]]) -> set[tuple[int,int]]:
+    policy = BANK_MONTH_POLICY.get((bank_name or "").upper().strip(), {"months": 6, "include_current": True})
+    n = max(0, int(policy["months"]))
+    inc = bool(policy["include_current"])
+    if n == 0 or not available_yms:
+        return set()
+
+    # 1) Today-anchored request
+    requested = months_back_list(today, n, inc)             # list like [(2025,8), (2025,7), ...]
+    avail_set = set(available_yms)
+    inter = [ym for ym in requested if ym in avail_set]     # keep order
+
+    # 2) If overlap is too small, fall back to statement-anchored months
+    if len(inter) < n:
+        # available_yms already sorted latest->oldest
+        fallback = available_yms[:n]
+        return set(fallback)
+
+    return set(inter)
+
+
+def line_yearmonth(line: str) -> tuple[int, int] | None:
+    """Get (year, month) from a single transaction line (expects leading DD-MM-YYYY)."""
+    m = re.search(r"^\s*(\d{2})-(\d{2})-(\d{4})", line or "")
+    if not m: 
+        return None
+    d, mo, y = int(m.group(1)), int(m.group(2)), int(m.group(3))
+    try:
+        datetime(y, mo, d)
+        return (y, mo)
+    except ValueError:
+        return None
+
+
+def get_target_days_by_bank(bank_name: str):
+    bank = (bank_name or "").upper().strip()
+    spec = BANK_TO_DAYS.get(bank)
+    if spec is None:
+        return DEFAULT_DAYS
+    if spec == "DAILY":
+        return list(range(1, 32))  # 1..31
+    # HERO or any N/A configured as empty -> choose what you want to do:
+    if isinstance(spec, list) and len(spec) == 0:
+        # Option A: return empty to skip extraction
+        # return []
+        # Option B (recommended): use a sensible default
+        return DEFAULT_DAYS
+    return spec
+
 
 def is_transaction_line(line: str) -> bool:
     """
@@ -152,47 +265,179 @@ def upload_file():
         if 'pdf_file' not in request.files:
             return 'No file part', 400
 
-        files = request.files.getlist('pdf_file')  # ✅ Get multiple files
+        files = request.files.getlist('pdf_file')  # ✅ multiple files
         if not files or all(f.filename == '' for f in files):
             return 'No selected file', 400
 
-        # Get the target day from the form input (default to 5 if blank or invalid)
+        # --- Bank days from dropdown (copy list to avoid mutating globals)
+        bank_name = request.form.get("bank_name", "")
+        target_days = list(get_target_days_by_bank(bank_name))
+
+        # --- Option B: only add custom days if provided (no phantom defaults)
         try:
-            target_day = int(request.form.get('target_day', 5))
-            if target_day < 1 or target_day > 31:
-                target_day = 5
-        except ValueError:
-            target_day = 5
+            date_count = int(request.form.get('date_count', 0))
+        except (TypeError, ValueError):
+            date_count = 0
 
+        custom_days = []
+        for i in range(1, date_count + 1):
+            raw = request.form.get(f'target_day_{i}')
+            if not raw or raw.strip() == "":
+                continue
+            try:
+                day = int(raw)
+                if 1 <= day <= 31:
+                    custom_days.append(day)
+            except ValueError:
+                pass
 
+        # de-dupe DAYS while preserving order
+        seen, merged_days = set(), []
+        for d in target_days + custom_days:
+            if d not in seen:
+                seen.add(d)
+                merged_days.append(d)
+        target_days = merged_days
+
+        print("Target days entered:", target_days)
+
+        # --- Extract text from PDFs
         full_text = ""
         os.makedirs("temp", exist_ok=True)
 
+        from werkzeug.utils import secure_filename
+        import uuid
+
         for file in files:
-            pdf_path = os.path.join("temp", file.filename)
+            safe = secure_filename(file.filename) or f"upload-{uuid.uuid4().hex}.pdf"
+            pdf_path = os.path.join("temp", f"{uuid.uuid4().hex}-{safe}")
             file.save(pdf_path)
 
-            # Extract text from each PDF
             with pdfplumber.open(pdf_path) as pdf:
-                for i, page in enumerate(pdf.pages, start=1):
+                for idx, page in enumerate(pdf.pages, start=1):
                     text = page.extract_text()
                     if text:
-                        full_text += f"--- {file.filename} | Page {i} ---\n{text}\n\n"
+                        full_text += f"--- {safe} | Page {idx} ---\n{text}\n\n"
 
-        # Clean and format
+        # --- Clean and format
         formatted_text = clean_pdf_text(full_text)
-        
-        print("formatted",formatted_text)
-        if formatted_text == 0:
+        if isinstance(formatted_text, int) and formatted_text == 0:
             formatted_text = full_text
-        filtered_text = extract_last_transaction_on_or_before_day(formatted_text, target_day=target_day)
-        print("filter",filtered_text)
+
+
+
+        # --- figure out allowed months for this bank & this PDF ---
+        available_yms = extract_available_yearmonths(formatted_text)
+        print("available yms",available_yms)
+        today = datetime.today()
+        allowed_yms = allowed_months_for_bank(bank_name, today, available_yms)
+        print("allowed yms",allowed_yms)
+        # Build the aggregate list by calling your existing function per day
+        filtered_lines = []
+
+        
+        for day in target_days:  # Loop through each day in your list
+            result = extract_last_transaction_on_or_before_day(formatted_text, target_day=day)
+            # normalize to iterable
+            if isinstance(result, list):
+                candidates = result
+            elif result is None:
+                candidates = []
+            else:
+                candidates = [str(result)]
+        
+            for line in candidates:
+                s = str(line).strip()
+        
+                # get (year, month) from the line's date at start like DD-MM-YYYY
+                m = re.search(r"^\s*(\d{2})-(\d{2})-(\d{4})", s)
+                if not m:
+                    # couldn't parse a date; skip this line
+                    continue
+        
+                d, mo, y = int(m.group(1)), int(m.group(2)), int(m.group(3))
+                ym = (y, mo)
+        
+                # keep only lines whose (year, month) is allowed
+                if ym in allowed_yms:
+                    filtered_lines.append(s)
+
+        # --- Convert to text and count lines
+        if filtered_lines:
+            filtered_text = "\n".join(filtered_lines)
+            line_count = len(filtered_lines)
+        else:
+            filtered_text = ""
+            line_count = 0
+        print("number of line get counted",line_count)  
+        # If nothing matches, skip GPT and render directly
+        if line_count == 0:
+            return render_template('test.html', filtered_text="No results in the selected month window.")
+        '''
+        # ✅ Convert to string for HTML display
+        filtered_text = "\n".join(filtered_lines) if filtered_lines else "No results in the selected month window."
+        '''
+        #return render_template('test.html', filtered_text=filtered_text)
+        
         
         gpt_result = ""
-        if isinstance(filtered_text, list):
-            filtered_text = "\n".join(filtered_text)
+        try:
+            prompt_user = f"""
+You are given exactly {line_count} transaction lines. Process EVERY line. Do not skip, merge, or reorder.
+
+Rules per line:
+- Date = the FIRST date in DD-MM-YYYY at the start of the line.
+- Closing Balance = the VERY LAST numeric value in the line. Ignore any 'CR' or 'DR' that may follow it.
+- Treat commas as thousands separators; keep two decimals in the output.
+
+Output format:
+1) For EACH of the {line_count} input lines, output exactly one line:
+   Used date: DD-MM-YYYY, Closing Balance: ₹<amount>
+   (Keep the same order as the input.)
+2) After listing all lines, output two final lines:
+   sum = ₹<sum of all balances>
+   average_balance = ₹<sum divided by {line_count}>
+
+Accuracy requirements:
+- Use high precision for arithmetic; round ONLY at final display to two decimals.
+- BEFORE returning, verify you produced exactly {line_count} result lines (not counting the final two summary lines). If not, correct yourself and re-run your extraction until the counts match.
+
+Transactions:
+{filtered_text}
+""".strip()
+
+            response = client.chat.completions.create(
+                model="gpt-4o",
+                temperature=0,
+                messages=[
+                    {"role": "system", "content": "You are a precise financial parsing assistant."},
+                    {"role": "user", "content": prompt_user},
+                ],
+            )
+            gpt_result = response.choices[0].message.content
+        except Exception as e:
+            gpt_result = f"❌ OpenAI Error: {str(e)}"
         
-        # 🔁 OpenAI API call
+        
+        
+        return render_template(
+            'result.html',
+            formatted_text=formatted_text or "",
+            filtered_text=filtered_text or "",
+            gpt_result=gpt_result or ""
+        )
+
+    return render_template('upload.html')
+
+
+
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=5000,debug=True)
+
+
+
+'''
+# 🔁 OpenAI API call
         try:
             response = client.chat.completions.create(
                 model="gpt-4o",
@@ -233,19 +478,4 @@ Rules:
             gpt_result = f"❌ OpenAI Error: {str(e)}"
         
         
-        
-        return render_template(
-            'result.html',
-            formatted_text=formatted_text or "",
-            filtered_text=filtered_text or "",
-            gpt_result=gpt_result or ""
-        )
-
-    return render_template('upload.html')
-
-
-
-
-
-if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000,debug=True)
+'''
