@@ -34,7 +34,7 @@ BANK_TO_DAYS = {
 }
 DEFAULT_DAYS = [5]  # fallback if bank not in map
 BANK_MONTH_POLICY = {
-    "TATA":      {"months": 3,  "include_current": False},  # LATEST 3 MONTH + CURRENT MONTH IS NOT COUNTED AS MONTH
+    "TATA":      {"months": 3,  "include_current": True},  # LATEST 3 MONTH + CURRENT MONTH IS NOT COUNTED AS MONTH
     "IDFC":      {"months": 6,  "include_current": True},   # LATEST 6 MONTH + CURRENT MONTH
     "BAJAJ":     {"months": 3,  "include_current": True},   # LATEST 3 MONTH + CURRENT MONTH
     "YES BANK":  {"months": 6,  "include_current": True},   # LATEST 6 MONTH + CURRENT MONTH
@@ -67,18 +67,45 @@ def months_back_list(today: datetime, n: int, include_current: bool) -> list[tup
         out.append((y, m))
     return out
 
-DATE_RE = re.compile(r"(^|\n)\s*(\d{2})-(\d{2})-(\d{4})")
+date_pattern = re.compile(
+        r'\d{1,2}[/-]\d{1,2}[/-]\d{2,4}'  # 01/01/2024 or 01-01-2024
+        r'|\d{1,2}[.]\d{1,2}[.]\d{2,4}'  # 01.01.2024
+        r'|\d{1,2}\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*[,]?\s+\d{2,4}'  # 01 Jan 2024
+        r'|\d{1,2}[-](?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*[-]\d{2,4}'  # 01-Jan-24
+        r'|\d{4}[-/]\d{2}[-/]\d{2}'  # 2024-01-01
+        r'|\d{1,2}\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d{4}'  # 2 Jan 2025
+        r'|\d{1,2}\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d{1,2}\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d{4}',  # 31 Jan 31 Jan 2025
+        flags=re.IGNORECASE
+    )
+
+possible_formats = [
+        "%d-%m-%Y", "%d/%m/%Y", "%d.%m.%Y",
+        "%d-%m-%y", "%d/%m/%y", "%d.%m.%y",
+        "%d-%b-%Y", "%d %b %Y", "%d %B %Y", "%d %b, %Y", "%d %B, %Y",
+        "%Y-%m-%d", "%d-%b-%y", "%d %b %y",
+        "%d %B %Y", "%d %b %Y",
+        "%d %b", "%d %B",
+        "%d %b %Y", "%d %B %Y"
+    ]
 def extract_available_yearmonths(text: str) -> list[tuple[int, int]]:
-    """Find unique (year, month) pairs present in the statement text."""
+    """Find unique (year, month) pairs present in the statement text (any common date format)."""
     seen = set()
-    for m in DATE_RE.finditer(text or ""):
-        d = int(m.group(2)); mo = int(m.group(3)); y = int(m.group(4))
-        try:
-            datetime(y, mo, d)
-            seen.add((y, mo))
-        except ValueError:
-            pass
-    # sort descending by date (latest first)
+    if not text:
+        return []
+
+    for m in date_pattern.finditer(text):
+        token = m.group(0)
+        # Try parsing token with multiple formats
+        for fmt in possible_formats:
+            try:
+                dt = datetime.strptime(token, fmt)
+                # Optional: coerce very old 2-digit years into 2000s if needed
+                # if dt.year < 1970: dt = dt.replace(year=dt.year + 100)
+                seen.add((dt.year, dt.month))
+                break
+            except ValueError:
+                continue
+
     return sorted(seen, key=lambda t: (t[0], t[1]), reverse=True)
 
 def allowed_months_for_bank(bank_name: str, today: datetime, available_yms: list[tuple[int,int]]) -> set[tuple[int,int]]:
@@ -216,7 +243,7 @@ def extract_last_transaction_on_or_before_day(full_text: str, target_day: int = 
         grouped[(dt.year, dt.month)].append((dt, line))
 
     selected_lines = []
-    for (year, month), entries in sorted(grouped.items())[:max_months]:
+    for (year, month), entries in sorted(grouped.items(), key=lambda kv: kv[0], reverse=True)[:max_months]:
         try:
             target = datetime(year, month, target_day)
         except ValueError:
@@ -325,7 +352,7 @@ def upload_file():
             formatted_text = full_text
 
 
-
+        print(formatted_text)
         # --- figure out allowed months for this bank & this PDF ---
         available_yms = extract_available_yearmonths(formatted_text)
         print("available yms",available_yms)
@@ -349,14 +376,24 @@ def upload_file():
             for line in candidates:
                 s = str(line).strip()
         
-                # get (year, month) from the line's date at start like DD-MM-YYYY
-                m = re.search(r"^\s*(\d{2})-(\d{2})-(\d{4})", s)
+                # find a date near the start of the line; if not found there, search whole line
+                m = date_pattern.search(s[:60]) or date_pattern.search(s)
                 if not m:
-                    # couldn't parse a date; skip this line
                     continue
-        
-                d, mo, y = int(m.group(1)), int(m.group(2)), int(m.group(3))
-                ym = (y, mo)
+                date_token = m.group(0)
+                dt_obj = None
+                for fmt in possible_formats:
+                    try:
+                        dt_obj = datetime.strptime(date_token, fmt)
+                        # Optional: coerce two-digit years if needed
+                        # if dt_obj.year < 1970:
+                        #     dt_obj = dt_obj.replace(year=dt_obj.year + 100)
+                        break
+                    except ValueError:
+                        continue
+                ym = (dt_obj.year, dt_obj.month)
+                if not dt_obj:
+                    continue
         
                 # keep only lines whose (year, month) is allowed
                 if ym in allowed_yms:
@@ -386,7 +423,7 @@ def upload_file():
 You are given exactly {line_count} transaction lines. Process EVERY line. Do not skip, merge, or reorder.
 
 Rules per line:
-- Date = the FIRST date in DD-MM-YYYY at the start of the line.
+- Date = Dates can be in formats like DD-MM-YYYY, DD/MM/YY, DD Mon YYYY, or YYYY-MM-DD; always use the first date you see on the line. 
 - Closing Balance = the VERY LAST numeric value in the line. Ignore any 'CR' or 'DR' that may follow it.
 - Treat commas as thousands separators; keep two decimals in the output.
 
