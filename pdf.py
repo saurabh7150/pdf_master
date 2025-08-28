@@ -415,7 +415,7 @@ def upload_file():
         # ✅ Convert to string for HTML display
         filtered_text = "\n".join(filtered_lines) if filtered_lines else "No results in the selected month window."
         '''
-        return render_template('test.html', filtered_text=filtered_text)
+        #return render_template('test.html', filtered_text=filtered_text)
         
         
         gpt_result = ""
