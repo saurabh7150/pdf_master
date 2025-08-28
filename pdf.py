@@ -34,18 +34,18 @@ BANK_TO_DAYS = {
 }
 DEFAULT_DAYS = [5]  # fallback if bank not in map
 BANK_MONTH_POLICY = {
-    "TATA":      {"months": 3,  "include_current": True},  # LATEST 3 MONTH + CURRENT MONTH IS NOT COUNTED AS MONTH
-    "IDFC":      {"months": 6,  "include_current": True},   # LATEST 6 MONTH + CURRENT MONTH
-    "BAJAJ":     {"months": 3,  "include_current": True},   # LATEST 3 MONTH + CURRENT MONTH
-    "YES BANK":  {"months": 6,  "include_current": True},   # LATEST 6 MONTH + CURRENT MONTH
+    "TATA":      {"months": 3,  "include_current": False},  # LATEST 3 MONTH + CURRENT MONTH IS NOT COUNTED AS MONTH
+    "IDFC":      {"months": 7,  "include_current": True},   # LATEST 6 MONTH + CURRENT MONTH
+    "BAJAJ":     {"months": 4,  "include_current": True},   # LATEST 3 MONTH + CURRENT MONTH
+    "YES BANK":  {"months": 7,  "include_current": True},   # LATEST 6 MONTH + CURRENT MONTH
     "PIRAMAL":   {"months": 6,  "include_current": False},  # LATEST 6 MONTH - CURRENT MONTH IS NOT COUNTED AS MONTH
-    "AXIS BANK": {"months": 3,  "include_current": True},   # LATEST 3 MONTH + CURRENT MONTH
-    "HDFC":      {"months": 6,  "include_current": True},   # LATEST 6 MONTH + CURRENT MONTH
+    "AXIS BANK": {"months": 4,  "include_current": True},   # LATEST 3 MONTH + CURRENT MONTH
+    "HDFC":      {"months": 7,  "include_current": True},   # LATEST 6 MONTH + CURRENT MONTH
     "HERO":      {"months": 0,  "include_current": False},  # N/A
-    "POONAWALA": {"months": 6,  "include_current": True},   # LATEST 6 MONTH + CURRENT MONTH
-    "ICICI":     {"months": 12, "include_current": True},   # LATEST 12 MONTH + CURRENT MONTH
-    "AU":        {"months": 6,  "include_current": True},   # LATEST 6 MONTH + CURRENT MONTH
-    "CHOLA":     {"months": 6,  "include_current": True},   # LATEST 6 MONTH + CURRENT MONTH
+    "POONAWALA": {"months": 7,  "include_current": True},   # LATEST 6 MONTH + CURRENT MONTH
+    "ICICI":     {"months": 13, "include_current": True},   # LATEST 12 MONTH + CURRENT MONTH
+    "AU":        {"months": 7,  "include_current": True},   # LATEST 6 MONTH + CURRENT MONTH
+    "CHOLA":     {"months": 7,  "include_current": True},   # LATEST 6 MONTH + CURRENT MONTH
 }
 def ym(dt: datetime) -> tuple[int, int]:
     return (dt.year, dt.month)
@@ -191,7 +191,7 @@ from datetime import datetime
 from collections import defaultdict
 import re
 
-def extract_last_transaction_on_or_before_day(full_text: str, target_day: int = 5, max_months: int = 6):
+def extract_last_transaction_on_or_before_day(full_text: str, target_day: int = 5, max_months: int = 13):
     """
     For each of the first max_months months:
     - If there are transactions on the target_day, pick the last one.
@@ -366,6 +366,7 @@ def upload_file():
         for day in target_days:  # Loop through each day in your list
             result = extract_last_transaction_on_or_before_day(formatted_text, target_day=day)
             # normalize to iterable
+            
             if isinstance(result, list):
                 candidates = result
             elif result is None:
@@ -398,7 +399,7 @@ def upload_file():
                 # keep only lines whose (year, month) is allowed
                 if ym in allowed_yms:
                     filtered_lines.append(s)
-
+       
         # --- Convert to text and count lines
         if filtered_lines:
             filtered_text = "\n".join(filtered_lines)
@@ -414,7 +415,7 @@ def upload_file():
         # ✅ Convert to string for HTML display
         filtered_text = "\n".join(filtered_lines) if filtered_lines else "No results in the selected month window."
         '''
-        #return render_template('test.html', filtered_text=filtered_text)
+        return render_template('test.html', filtered_text=filtered_text)
         
         
         gpt_result = ""
